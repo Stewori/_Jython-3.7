@@ -125,6 +125,7 @@ import org.python.antlr.ast.ListComp;
 import org.python.antlr.ast.Lambda;
 import org.python.antlr.ast.Module;
 import org.python.antlr.ast.Name;
+import org.python.antlr.ast.Nonlocal;
 import org.python.antlr.ast.Num;
 import org.python.antlr.ast.operatorType;
 import org.python.antlr.ast.Pass;
@@ -135,6 +136,7 @@ import org.python.antlr.ast.Return;
 import org.python.antlr.ast.Set;
 import org.python.antlr.ast.SetComp;
 import org.python.antlr.ast.Slice;
+import org.python.antlr.ast.Starred;
 import org.python.antlr.ast.Str;
 import org.python.antlr.ast.Subscript;
 import org.python.antlr.ast.TryExcept;
@@ -145,6 +147,7 @@ import org.python.antlr.ast.UnaryOp;
 import org.python.antlr.ast.While;
 import org.python.antlr.ast.With;
 import org.python.antlr.ast.Yield;
+import org.python.antlr.ast.YieldFrom;
 import org.python.antlr.base.excepthandler;
 import org.python.antlr.base.expr;
 import org.python.antlr.base.mod;
@@ -168,8 +171,12 @@ import java.util.ListIterator;
 
     private String encoding;
 
-    private boolean printFunction = false;
-    private boolean unicodeLiterals = false;
+    //Use to switch between python2 and python3 semantics.
+    //true is python3, false is python2.
+    private boolean python3 = true;
+
+    private boolean printFunction = python3;
+    private boolean unicodeLiterals = python3;
 
     public void setErrorHandler(ErrorHandler eh) {
         this.errorHandler = eh;
@@ -434,6 +441,7 @@ attr
     | IN
     | IS
     | LAMBDA
+    | NONLOCAL
     | NOT
     | OR
     | ORELSE
@@ -482,7 +490,11 @@ decorators
       }
     ;
 
-//funcdef: [decorators] 'def' NAME parameters ':' suite
+//decorated: decorators (classdef | funcdef)
+//XXX: refactor to use decorated. Hopefully this will elimated the predicate in compound_stmt.
+
+//FIXME implement -> AST support.
+//funcdef: 'def' NAME parameters ['->' test] ':' suite
 funcdef
 @init {
     stmt stype = null;
@@ -491,7 +503,7 @@ funcdef
 @after {
     $funcdef.tree = stype;
 }
-    : decorators? DEF name_or_print parameters COLON suite[false]
+    : decorators? DEF name_or_print parameters (ARROW test[null])? COLON suite[false]
     {
         Token t = $DEF;
         if ($decorators.start != null) {
@@ -501,13 +513,13 @@ funcdef
     }
     ;
 
-//parameters: '(' [varargslist] ')'
+//parameters: '(' [typedargslist] ')'
 parameters
     returns [arguments args]
     : LPAREN
-      (varargslist
+      (typedargslist
         {
-              $args = $varargslist.args;
+              $args = $typedargslist.args;
         }
       |
         {
@@ -518,31 +530,110 @@ parameters
     ;
 
 //not in CPython's Grammar file
-defparameter
+tdefparameter
     [List defaults] returns [expr etype]
 @after {
-   $defparameter.tree = $etype;
+   $tdefparameter.tree = $etype;
 }
-    : fpdef[expr_contextType.Param] (ASSIGN test[expr_contextType.Load])?
+    : tfpdef[expr_contextType.Param] (ASSIGN test[expr_contextType.Load])?
       {
-          $etype = actions.castExpr($fpdef.tree);
+          $etype = actions.castExpr($tfpdef.tree);
           if ($ASSIGN != null) {
               defaults.add($test.tree);
           } else if (!defaults.isEmpty()) {
-              throw new ParseException("non-default argument follows default argument", $fpdef.tree);
+              throw new ParseException("non-default argument follows default argument", $tfpdef.tree);
           }
       }
     ;
 
-//varargslist: ((fpdef ['=' test] ',')*
+//not in CPython's Grammar file
+vdefparameter
+    [List defaults] returns [expr etype]
+@after {
+   $vdefparameter.tree = $etype;
+}
+    : vfpdef[expr_contextType.Param] (ASSIGN test[expr_contextType.Load])?
+      {
+          $etype = actions.castExpr($vfpdef.tree);
+          if ($ASSIGN != null) {
+              defaults.add($test.tree);
+          } else if (!defaults.isEmpty()) {
+              throw new ParseException("non-default argument follows default argument", $vfpdef.tree);
+          }
+      }
+    ;
+
+
+//typedargslist: ((tfpdef ['=' test] ',')*
 //              ('*' NAME [',' '**' NAME] | '**' NAME) |
-//              fpdef ['=' test] (',' fpdef ['=' test])* [','])
+//              tfpdef ['=' test] (',' tfpdef ['=' test])* [','])
+typedargslist
+    returns [arguments args]
+@init {
+    List defaults = new ArrayList();
+}
+    : d+=tdefparameter[defaults] (options {greedy=true;}:COMMA d+=tdefparameter[defaults])*
+      (COMMA
+          (STAR (starargs=NAME)? (COMMA d+=tdefparameter[defaults] (options {greedy=true;}:COMMA d+=tdefparameter[defaults])*)? (COMMA DOUBLESTAR kwargs=NAME)?
+          | DOUBLESTAR kwargs=NAME
+          )?
+      )?
+      {
+          $args = actions.makeArgumentsType($typedargslist.start, $d, $starargs, $kwargs, defaults);
+      }
+    | STAR (starargs=NAME)? (COMMA d+=tdefparameter[defaults] (options {greedy=true;}:COMMA d+=tdefparameter[defaults])*)? (COMMA DOUBLESTAR kwargs=NAME)?
+      {
+          $args = actions.makeArgumentsType($typedargslist.start, $d, $starargs, $kwargs, defaults);
+      }
+    | DOUBLESTAR kwargs=NAME
+      {
+          $args = actions.makeArgumentsType($typedargslist.start, $d, null, $kwargs, defaults);
+      }
+    ;
+
+//tfpdef: NAME [':' test]
+//FIXME: remove fplist
+tfpdef[expr_contextType ctype]
+@init {
+    expr etype = null;
+}
+@after {
+    if (etype != null) {
+        $tfpdef.tree = etype;
+    }
+    actions.checkAssign(actions.castExpr($tfpdef.tree));
+}
+    : NAME (COLON test[null])?
+      {
+          etype = new Name($NAME, $NAME.text, ctype);
+      }
+    | (LPAREN tfpdef[null] COMMA) => LPAREN fplist RPAREN
+      {
+          etype = new Tuple($fplist.start, actions.castExprs($fplist.etypes), expr_contextType.Store);
+      }
+    | LPAREN! fplist RPAREN!
+    ;
+
+//fplist: vfpdef (',' vfpdef)* [',']
+fplist
+    returns [List etypes]
+    : f+=vfpdef[expr_contextType.Store]
+      (options {greedy=true;}:COMMA f+=vfpdef[expr_contextType.Store])* (COMMA)?
+      {
+          $etypes = $f;
+      }
+    ;
+
+
+//varargslist: ((vfpdef ['=' test] ',')*
+//              ('*' NAME [',' '**' NAME] | '**' NAME) |
+//              vfpdef ['=' test] (',' vfpdef ['=' test])* [','])
 varargslist
     returns [arguments args]
 @init {
     List defaults = new ArrayList();
 }
-    : d+=defparameter[defaults] (options {greedy=true;}:COMMA d+=defparameter[defaults])*
+    : d+=vdefparameter[defaults] (options {greedy=true;}:COMMA d+=vdefparameter[defaults])*
       (COMMA
           (STAR starargs=NAME (COMMA DOUBLESTAR kwargs=NAME)?
           | DOUBLESTAR kwargs=NAME
@@ -561,36 +652,26 @@ varargslist
       }
     ;
 
-//fpdef: NAME | '(' fplist ')'
-fpdef[expr_contextType ctype]
+//vfpdef: NAME | '(' fplist ')'
+vfpdef[expr_contextType ctype]
 @init {
     expr etype = null;
 }
 @after {
     if (etype != null) {
-        $fpdef.tree = etype;
+        $vfpdef.tree = etype;
     }
-    actions.checkAssign(actions.castExpr($fpdef.tree));
+    actions.checkAssign(actions.castExpr($vfpdef.tree));
 }
     : NAME
       {
           etype = new Name($NAME, $NAME.text, ctype);
       }
-    | (LPAREN fpdef[null] COMMA) => LPAREN fplist RPAREN
+    | (LPAREN vfpdef[null] COMMA) => LPAREN fplist RPAREN
       {
           etype = new Tuple($fplist.start, actions.castExprs($fplist.etypes), expr_contextType.Store);
       }
     | LPAREN! fplist RPAREN!
-    ;
-
-//fplist: fpdef (',' fpdef)* [',']
-fplist
-    returns [List etypes]
-    : f+=fpdef[expr_contextType.Store]
-      (options {greedy=true;}:COMMA f+=fpdef[expr_contextType.Store])* (COMMA)?
-      {
-          $etypes = $f;
-      }
     ;
 
 //stmt: simple_stmt | compound_stmt
@@ -616,21 +697,34 @@ simple_stmt
       }
     ;
 
-//small_stmt: (expr_stmt | print_stmt  | del_stmt | pass_stmt | flow_stmt |
-//             import_stmt | global_stmt | exec_stmt | assert_stmt)
+//small_stmt: (expr_stmt | del_stmt | pass_stmt | flow_stmt |
+//             import_stmt | global_stmt | nonlocal_stmt | assert_stmt)
+//XXX: remove print, exec when 3.x Lib works.
 small_stmt : expr_stmt
            | del_stmt
            | pass_stmt
            | flow_stmt
            | import_stmt
            | global_stmt
+           | nonlocal_stmt
            | exec_stmt
            | assert_stmt
            | {!printFunction}? => print_stmt
            ;
 
-//expr_stmt: testlist (augassign (yield_expr|testlist) |
-//                     ('=' (yield_expr|testlist))*)
+//star_expr: '*' expr
+star_expr
+    [expr_contextType ctype] returns [expr etype]
+@after {
+    $star_expr.tree = $etype;
+}
+    : STAR expr[ctype] {
+        $etype = new Starred($STAR, actions.castExpr($expr.tree), ctype);
+    }
+    ;
+
+//expr_stmt: testlist_star_expr (augassign (yield_expr|testlist) |
+//                     ('=' (yield_expr|testlist_star_expr))*)
 expr_stmt
 @init {
     stmt stype = null;
@@ -640,23 +734,23 @@ expr_stmt
         $expr_stmt.tree = stype;
     }
 }
-    : ((testlist[null] augassign) => lhs=testlist[expr_contextType.AugStore]
+    : ((testlist_star_expr[null] augassign) => lhs=testlist_star_expr[expr_contextType.AugStore]
         ( (aay=augassign y1=yield_expr
            {
                actions.checkAugAssign(actions.castExpr($lhs.tree));
                stype = new AugAssign($lhs.tree, actions.castExpr($lhs.tree), $aay.op, actions.castExpr($y1.etype));
            }
           )
-        | (aat=augassign rhs=testlist[expr_contextType.Load]
+        | (aat=augassign rhs=testlist_star_expr[expr_contextType.Load]
            {
                actions.checkAugAssign(actions.castExpr($lhs.tree));
                stype = new AugAssign($lhs.tree, actions.castExpr($lhs.tree), $aat.op, actions.castExpr($rhs.tree));
            }
           )
         )
-    | (testlist[null] ASSIGN) => lhs=testlist[expr_contextType.Store]
+    | (testlist_star_expr[null] ASSIGN) => lhs=testlist_star_expr[expr_contextType.Store]
         (
-        | ((at=ASSIGN t+=testlist[expr_contextType.Store])+
+        | ((at=ASSIGN t+=testlist_star_expr[expr_contextType.Store])+
             {
                 stype = new Assign($lhs.tree, actions.makeAssignTargets(
                     actions.castExpr($lhs.tree), $t), actions.makeAssignValue($t));
@@ -669,11 +763,38 @@ expr_stmt
             }
           )
         )
-    | lhs=testlist[expr_contextType.Load]
+    | lhs=testlist_star_expr[expr_contextType.Load]
       {
           stype = new Expr($lhs.start, actions.castExpr($lhs.tree));
       }
     )
+    ;
+
+//testlist_star_expr: (test|star_expr) (',' (test|star_expr))* [',']
+testlist_star_expr[expr_contextType ctype]
+@init {
+    expr etype = null;
+}
+@after {
+    if (etype != null) {
+        $testlist_star_expr.tree = etype;
+    }
+}
+
+    : ((test[null] | star_expr[null]) COMMA)
+    => 
+     (t+=test_or_star_expr[ctype]) (options {greedy=true;}:COMMA (t+=test_or_star_expr[ctype]))* (COMMA)?
+      {
+          etype = new Tuple($testlist_star_expr.start, actions.castExprs($t), ctype);
+      }
+    | (test[ctype]
+    | star_expr[ctype])
+    ;
+
+//not in CPython's Grammar file
+test_or_star_expr[expr_contextType ctype]
+    : test[ctype]
+    | star_expr[ctype]
     ;
 
 //augassign: ('+=' | '-=' | '*=' | '/=' | '%=' | '&=' | '|=' | '^=' |
@@ -691,6 +812,10 @@ augassign
     | STAREQUAL
         {
             $op = operatorType.Mult;
+        }
+    | ATEQUAL
+        {
+            $op = operatorType.MatMult;
         }
     | SLASHEQUAL
         {
@@ -898,7 +1023,11 @@ yield_stmt
       }
     ;
 
+//FIXME: for now, allow old python2 style exceptions.
 //raise_stmt: 'raise' [test [',' test [',' test]]]
+//
+//FIXME: when we fully switch to python3 this is the rule:
+//raise_stmt: 'raise' [test ['from' test]]
 raise_stmt
 @init {
     stmt stype = null;
@@ -906,7 +1035,7 @@ raise_stmt
 @after {
    $raise_stmt.tree = stype;
 }
-    : RAISE (t1=test[expr_contextType.Load] (COMMA t2=test[expr_contextType.Load]
+    : RAISE (t1=test[expr_contextType.Load] (FROM t4=test[expr_contextType.Load])? (COMMA t2=test[expr_contextType.Load]
         (COMMA t3=test[expr_contextType.Load])?)?)?
       {
           stype = new Raise($RAISE, actions.castExpr($t1.tree), actions.castExpr($t2.tree), actions.castExpr($t3.tree));
@@ -1058,6 +1187,21 @@ global_stmt
       }
     ;
 
+//nonlocal_stmt: 'nonlocal' NAME (',' NAME)*
+nonlocal_stmt
+@init {
+    stmt stype = null;
+}
+@after {
+   $nonlocal_stmt.tree = stype;
+}
+    : NONLOCAL n+=NAME (COMMA n+=NAME)*
+      {
+          stype = new Nonlocal($NONLOCAL, actions.makeNames($n), actions.makeNameNodes($n));
+      }
+    ;
+
+
 //exec_stmt: 'exec' expr ['in' test [',' test]]
 exec_stmt
 @init {
@@ -1086,7 +1230,9 @@ assert_stmt
       }
     ;
 
-//compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | funcdef | classdef
+//compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | with_stmt | funcdef | classdef
+//XXX: refactor to use decorated like:
+//compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | with_stmt | funcdef | classdef | decorated
 compound_stmt
     : if_stmt
     | while_stmt
@@ -1593,7 +1739,7 @@ arith_op
       }
     ;
 
-//term: factor (('*'|'/'|'%'|'//') factor)*
+//term: factor (('*'|'@'|'/'|'%'|'//') factor)*
 term
     returns [Token lparen = null]
 @init {
@@ -1627,6 +1773,10 @@ term_op
     : STAR
       {
           $op = operatorType.Mult;
+      }
+    | AT
+      {
+          $op = operatorType.MatMult;
       }
     | SLASH
       {
@@ -2035,7 +2185,7 @@ dictorsetmaker[Token lcurly]
          )
     ;
 
-//classdef: 'class' NAME ['(' [testlist] ')'] ':' suite
+//classdef: 'class' NAME ['(' [arglist] ')'] ':' suite
 classdef
 @init {
     stmt stype = null;
@@ -2043,16 +2193,19 @@ classdef
 @after {
    $classdef.tree = stype;
 }
-    : decorators? CLASS NAME (LPAREN testlist[expr_contextType.Load]? RPAREN)? COLON suite[false]
+    : decorators? CLASS NAME (LPAREN arglist? RPAREN)? COLON suite[false]
       {
           Token t = $CLASS;
           if ($decorators.start != null) {
               t = $decorators.start;
           }
-          stype = new ClassDef(t, actions.cantBeNoneName($NAME),
-              actions.makeBases(actions.castExpr($testlist.tree)),
-              actions.castStmts($suite.stypes),
-              actions.castExprs($decorators.etypes));
+          stype = actions.makeClass(t, $NAME,
+                                    $arglist.args,
+                                    $arglist.keywords,
+                                    $arglist.starargs,
+                                    $arglist.kwargs,
+                                    $suite.stypes,
+                                    $decorators.etypes);
       }
     ;
 
@@ -2189,17 +2342,42 @@ comp_if[List gens, List ifs]
       }
     ;
 
-//yield_expr: 'yield' [testlist]
+//yield_expr: 'yield' [yield_arg]
 yield_expr
     returns [expr etype]
 @after {
     //needed for y2+=yield_expr
     $yield_expr.tree = $etype;
 }
-    : YIELD testlist[expr_contextType.Load]?
+    : YIELD yield_arg?
       {
-          $etype = new Yield($YIELD, actions.castExpr($testlist.tree));
+          if (!$yield_arg.isYieldFrom) {
+              $etype = new Yield($YIELD, actions.castExpr($yield_arg.tree));
+          } else {
+              $etype = new YieldFrom($YIELD, actions.castExpr($yield_arg.tree));
+          }
       }
+    ;
+
+//yield_arg: 'from' test | testlist
+yield_arg
+    returns [expr etype, boolean isYieldFrom]
+@init {
+    expr etype = null;
+}
+@after {
+    if (etype != null) {
+        $yield_arg.tree = etype;
+    }
+}
+    : FROM test[expr_contextType.Load] {
+        etype = actions.castExpr($test.tree);
+        $isYieldFrom = true;
+    }
+    | testlist[expr_contextType.Load] {
+        etype = actions.castExpr($testlist.tree);
+        $isYieldFrom = false;
+    }
     ;
 
 //START OF LEXER RULES
@@ -2222,6 +2400,7 @@ IMPORT    : 'import' ;
 IN        : 'in' ;
 IS        : 'is' ;
 LAMBDA    : 'lambda' ;
+NONLOCAL  : 'nonlocal' ;
 ORELSE    : 'else' ;
 PASS      : 'pass'  ;
 PRINT     : 'print' ;
@@ -2298,6 +2477,8 @@ DOUBLESTAR    : '**' ;
 
 STAREQUAL    : '*=' ;
 
+ATEQUAL     : '@=' ;
+
 DOUBLESLASH    : '//' ;
 
 SLASHEQUAL    : '/=' ;
@@ -2317,6 +2498,8 @@ RIGHTSHIFTEQUAL    : '>>=' ;
 DOUBLESTAREQUAL    : '**=' ;
 
 DOUBLESLASHEQUAL    : '//=' ;
+
+ARROW : '->' ;
 
 DOT : '.' ;
 

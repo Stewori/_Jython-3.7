@@ -43,7 +43,7 @@ public void BitOr___init__(PyObject[] args, String[] keywords) {}
     }
 
     final PyObject BitOr___int__() {
-        return Py.newInteger(9);
+        return Py.newInteger(10);
     }
 
 }

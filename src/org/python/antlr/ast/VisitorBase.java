@@ -163,6 +163,12 @@ public abstract class VisitorBase<R> implements VisitorIF<R> {
         return ret;
     }
 
+    public R visitNonlocal(Nonlocal node) throws Exception {
+        R ret = unhandled_node(node);
+        traverse(node);
+        return ret;
+    }
+
     public R visitExpr(Expr node) throws Exception {
         R ret = unhandled_node(node);
         traverse(node);
@@ -259,6 +265,12 @@ public abstract class VisitorBase<R> implements VisitorIF<R> {
         return ret;
     }
 
+    public R visitYieldFrom(YieldFrom node) throws Exception {
+        R ret = unhandled_node(node);
+        traverse(node);
+        return ret;
+    }
+
     public R visitCompare(Compare node) throws Exception {
         R ret = unhandled_node(node);
         traverse(node);
@@ -296,6 +308,12 @@ public abstract class VisitorBase<R> implements VisitorIF<R> {
     }
 
     public R visitSubscript(Subscript node) throws Exception {
+        R ret = unhandled_node(node);
+        traverse(node);
+        return ret;
+    }
+
+    public R visitStarred(Starred node) throws Exception {
         R ret = unhandled_node(node);
         traverse(node);
         return ret;
