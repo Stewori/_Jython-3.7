@@ -25,6 +25,7 @@ public interface VisitorIF<R> {
     public R visitImportFrom(ImportFrom node) throws Exception;
     public R visitExec(Exec node) throws Exception;
     public R visitGlobal(Global node) throws Exception;
+    public R visitNonlocal(Nonlocal node) throws Exception;
     public R visitExpr(Expr node) throws Exception;
     public R visitPass(Pass node) throws Exception;
     public R visitBreak(Break node) throws Exception;
@@ -41,6 +42,7 @@ public interface VisitorIF<R> {
     public R visitDictComp(DictComp node) throws Exception;
     public R visitGeneratorExp(GeneratorExp node) throws Exception;
     public R visitYield(Yield node) throws Exception;
+    public R visitYieldFrom(YieldFrom node) throws Exception;
     public R visitCompare(Compare node) throws Exception;
     public R visitCall(Call node) throws Exception;
     public R visitRepr(Repr node) throws Exception;
@@ -48,6 +50,7 @@ public interface VisitorIF<R> {
     public R visitStr(Str node) throws Exception;
     public R visitAttribute(Attribute node) throws Exception;
     public R visitSubscript(Subscript node) throws Exception;
+    public R visitStarred(Starred node) throws Exception;
     public R visitName(Name node) throws Exception;
     public R visitList(List node) throws Exception;
     public R visitTuple(Tuple node) throws Exception;
